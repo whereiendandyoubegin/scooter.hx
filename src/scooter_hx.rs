@@ -222,13 +222,22 @@ fn diffs_to_vec(diffs: &[Diff]) -> LineWithStyle {
     diffs
         .iter()
         .map(|d| {
+            let fg = match d.fg_colour {
+                DiffColour::Red => "red",
+                DiffColour::Green => "green",
+                DiffColour::Black => "black",
+            };
+
+            let bg = d.bg_colour.as_ref().map(|c| match c {
+                DiffColour::Red => "red",
+                DiffColour::Green => "green",
+                DiffColour::Black => "black",
+            });
+
             vec![
                 strip_control_chars(&d.text).into_owned(),
-                d.fg_colour.to_string().into(),
-                d.bg_colour
-                    .clone()
-                    .map(|c| c.to_string().into())
-                    .unwrap_or_default(),
+                fg.to_owned(),
+                bg.unwrap_or("").to_owned(),
             ]
         })
         .collect()
