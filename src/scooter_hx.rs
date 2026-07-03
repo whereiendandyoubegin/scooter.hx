@@ -1,4 +1,8 @@
 use scooter_core::replace::{ReplaceResult, add_replacement};
+use scooter_core::{
+    line_reader::LineEnding,
+    search::{Line, SearchResult},
+};
 use scooter_core::file_content::{default_file_content_provider};
 use std::string::String;
 use scooter_core::search::{FileSearcher, ParsedSearchConfig, SearchResultWithReplacement, MatchContent};
@@ -657,63 +661,99 @@ mod tests {
         };
 
         let expected = vec![
-        SearchResultWithReplacement {
-            search_result: SearchResult {
-                path: Some(temp_dir.path().join("file1.txt")),
-                content: MatchContent::Line {
-                    line_number: 2,
-                    content: "It contains TEST_PATTERN that should be replaced.".to_owned(),
-                    line_ending: LineEnding::Lf,
+            SearchResultWithReplacement {
+                search_result: SearchResult {
+                    path: Some(temp_dir.path().join("file1.txt")),
+                    content: MatchContent::ByteRange {
+                        lines: vec![(
+                            2,
+                            Line {
+                                content: "It contains TEST_PATTERN that should be replaced.".to_owned(),
+                                line_ending: LineEnding::Lf,
+                            },
+                        )],
+                        match_start_in_first_line: 12,
+                        match_end_in_last_line: 24,
+                        byte_start: 33,
+                        byte_end: 45,
+                        content: "TEST_PATTERN".to_owned(),
+                    },
+                    included: true,
                 },
-                included: true,
+                replacement: "REPLACEMENT".to_owned(),
+                replace_result: None,
+                preview_error: None,
             },
-            replacement: "It contains REPLACEMENT that should be replaced.".to_owned(),
-            replace_result: None,
-            preview_error: None,
-        },
-        SearchResultWithReplacement {
-            search_result: SearchResult {
-                path: Some(temp_dir.path().join("file1.txt")),
-                content: MatchContent::Line {
-                    line_number: 3,
-                    content: "Multiple lines with TEST_PATTERN here.".to_owned(),
-                    line_ending: LineEnding::Lf,
+            SearchResultWithReplacement {
+                search_result: SearchResult {
+                    path: Some(temp_dir.path().join("file1.txt")),
+                    content: MatchContent::ByteRange {
+                        lines: vec![(
+                            3,
+                            Line {
+                                content: "Multiple lines with TEST_PATTERN here.".to_owned(),
+                                line_ending: LineEnding::Lf,
+                            },
+                        )],
+                        match_start_in_first_line: 20,
+                        match_end_in_last_line: 32,
+                        byte_start: 91,
+                        byte_end: 103,
+                        content: "TEST_PATTERN".to_owned(),
+                    },
+                    included: true,
                 },
-                included: true,
+                replacement: "REPLACEMENT".to_owned(),
+                replace_result: None,
+                preview_error: None,
             },
-            replacement: "Multiple lines with REPLACEMENT here.".to_owned(),
-            replace_result: None,
-            preview_error: None,
-        },
-        SearchResultWithReplacement {
-            search_result: SearchResult {
-                path: Some(temp_dir.path().join("file2.txt")),
-                content: MatchContent::Line {
-                    line_number: 1,
-                    content: "Another file with TEST_PATTERN.".to_owned(),
-                    line_ending: LineEnding::Lf,
+            SearchResultWithReplacement {
+                search_result: SearchResult {
+                    path: Some(temp_dir.path().join("file2.txt")),
+                    content: MatchContent::ByteRange {
+                        lines: vec![(
+                            1,
+                            Line {
+                                content: "Another file with TEST_PATTERN.".to_owned(),
+                                line_ending: LineEnding::Lf,
+                            },
+                        )],
+                        match_start_in_first_line: 18,
+                        match_end_in_last_line: 30,
+                        byte_start: 18,
+                        byte_end: 30,
+                        content: "TEST_PATTERN".to_owned(),
+                    },
+                    included: true,
                 },
-                included: true,
+                replacement: "REPLACEMENT".to_owned(),
+                replace_result: None,
+                preview_error: None,
             },
-            replacement: "Another file with REPLACEMENT.".to_owned(),
-            replace_result: None,
-            preview_error: None,
-        },
-        SearchResultWithReplacement {
-            search_result: SearchResult {
-                path: Some(temp_dir.path().join("subdir").join("file3.txt")),
-                content: MatchContent::Line {
-                    line_number: 1,
-                    content: "Nested file with TEST_PATTERN.".to_owned(),
-                    line_ending: LineEnding::Lf,
+            SearchResultWithReplacement {
+                search_result: SearchResult {
+                    path: Some(temp_dir.path().join("subdir").join("file3.txt")),
+                    content: MatchContent::ByteRange {
+                        lines: vec![(
+                            1,
+                            Line {
+                                content: "Nested file with TEST_PATTERN.".to_owned(),
+                                line_ending: LineEnding::Lf,
+                            },
+                        )],
+                        match_start_in_first_line: 17,
+                        match_end_in_last_line: 29,
+                        byte_start: 17,
+                        byte_end: 29,
+                        content: "TEST_PATTERN".to_owned(),
+                    },
+                    included: true,
                 },
-                included: true,
+                replacement: "REPLACEMENT".to_owned(),
+                replace_result: None,
+                preview_error: None,
             },
-            replacement: "Nested file with REPLACEMENT.".to_owned(),
-            replace_result: None,
-            preview_error: None,
-        },
-    ];
+        ];
         search_results_clone.sort_by_key(|s| {
             let line = match &s.search_result.content {
                 MatchContent::Line { line_number, .. } => *line_number,
