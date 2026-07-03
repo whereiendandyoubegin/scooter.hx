@@ -137,7 +137,7 @@ impl SteelSearchResult {
             }
         };
 
-        let path_display = format!("{}:{}", self.display_path, self.line_num);
+        let path_display = format!("{}:{}", self.display_path, self.line_num());
 
         vec![path_display, error.clone()]
     }
