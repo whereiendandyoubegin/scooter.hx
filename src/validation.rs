@@ -1,5 +1,5 @@
 use abi_stable::std_types::RHashMap;
-use frep_core::validation::ValidationErrorHandler;
+use scooter_core::validation::ValidationErrorHandler;
 use steel::steel_vm::ffi::FFIValue;
 
 #[derive(Clone, Default, Eq, PartialEq)]

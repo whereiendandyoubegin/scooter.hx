@@ -1,15 +1,16 @@
 use scooter_core::replace::{ReplaceResult, add_replacement};
 use scooter_core::file_content::{FileContentProvider, default_file_content_provider};
+use tokio::sync::broadcast::error;
 // use scooter_core::diff::DiffColour;
 use std::string::String;
-use scooter_core::search::{FileSearcher, ParsedDirConfig, ParsedSearchConfig, SearchResultWithReplacement};
+use scooter_core::search::{FileSearcher, ParsedDirConfig, ParsedSearchConfig, SearchResultWithReplacement, MatchContent};
 use ignore::WalkState;
 use steel::rvals::Custom;
 // use steel::rvals::TypeKind::String;
 use steel::steel_vm::ffi::FFIValue;
 use steel_derive::Steel;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -169,15 +170,35 @@ impl SteelSearchResult {
     }
 
     fn from_search_result(search_result: &SearchResultWithReplacement, directory: &Path) -> Self {
+        let (line_num, line) = match &search_result.search_result.content {
+            MatchContent::Line {
+                line_number,
+                content,
+                ..
+            } => (*line_number, content.clone()),
+            MatchContent::ByteRange { .. } => {
+                panic!("ByteRange search results are not supported");
+            }
+        };
+
         Self {
-            display_path: relative_path(directory, &search_result.search_result.path),
+            display_path: relative_path(
+                directory,
+                search_result
+                    .search_result
+                    .path
+                    .as_deref()
+                    .expect("Search result should have a path"),
+            ),
             full_path: search_result
                 .search_result
                 .path
+                .as_ref()
+                .expect("Search result should have a path")
                 .to_string_lossy()
-                .into_owned(),
-            line_num: search_result.search_result.line_number,
-            line: search_result.search_result.line.clone(),
+                .to_string(),
+            line_num,
+            line,
             replacement: search_result.replacement.clone(),
             replace_result: search_result.replace_result.clone(),
             included: search_result.search_result.included,
@@ -239,6 +260,22 @@ impl ScooterHx {
         }
     }
 
+    pub(crate) fn cancel_replacement(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        if let State::PerformingReplacement { cancelled, .. } = &*state {
+            cancelled.store(true, Ordering::Relaxed);
+            *state = State::NotStarted;
+        }
+    }
+
+    pub(crate) fn replacement_errors(&self) -> Vec<SteelSearchResult> {
+        let state = self.state.lock().unwrap();
+        match &*state {
+            State::ReplacementComplete(stats) => stats.errors.clone(),
+            _ => vec![],
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_search(
         &mut self,
@@ -249,7 +286,7 @@ impl ScooterHx {
         match_case: bool,
         include_globs: &str,
         exclude_globs: &str,
-    ) -> Result<FFIValue, anyhow::Error> {
+    ) -> FFIValue {
         self.cancel_search();
 
         *self.state.lock().unwrap() = State::NotStarted;
@@ -264,36 +301,43 @@ impl ScooterHx {
             multiline: true,
             interpret_escape_sequences: true,
         };
-        let parsed_search_config = ParsedSearchConfig  {
-             search: parse_search_text(&search_config)?,
-             replace: replacement_text.to_string(),
-             multiline: true,
-        };
-        // TODO: handle errors in UI
-        let mut error_handler = SimpleErrorHandler::new();
+        let parsed_search_config = ParsedSearchConfig {
+            search: match parse_search_text(&search_config) {
+                Ok(search) => search,
+                Err(e) => {
+                    return error_response(
+                        "validation-error",
+                        &format!("Failed to parse search text: {e}"),
+                    );
+                }
+            },
+            replace: replacement_text.to_string(),
+            multiline: true,
+        };        // TODO: handle errors in UI
+        let mut error_handler = ErrorHandler::new();
         let dir_config = Some(DirConfig {
             include_globs: Some(include_globs),
             exclude_globs: Some(exclude_globs),
-            directory: self.directory,
+            directory: self.directory.clone(),
             include_hidden: false,
             include_git_folders: false,
         });
         let result = validation::validate_search_configuration(search_config, dir_config, &mut error_handler);
         let file_searcher = match result {
-            Err(e) => {
+             Err(e) => {
                 return error_response(
-                    "configuration-error",
+                    "validation-error",
                     &format!("Failed to validate search configuration: {e}"),
                 );
             }
-            Ok(ValidationResult::Success(search_config)) => {
+            Ok(ValidationResult::Success((parsed_search_config, parsed_dir_config))) => {
                 FileSearcher::new(
-                    ParsedSearchConfig,
-                    ParsedDirConfig,);
-                },
+                    parsed_search_config,
+                    parsed_dir_config.expect("directory config should be present"),
+                )},
 
             Ok(ValidationResult::ValidationErrors) => {
-                return validation_error_response(&error_handler);
+                return validation_error_response(&error_handler)
             },
         };
         let cancellation_token = Arc::new(AtomicBool::new(false));
@@ -505,22 +549,6 @@ impl ScooterHx {
             ),
         }
     }
-
-    pub(crate) fn cancel_replacement(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        if let State::PerformingReplacement { cancelled, .. } = &*state {
-            cancelled.store(true, Ordering::Relaxed);
-            *state = State::NotStarted;
-        }
-    }
-
-    pub(crate) fn replacement_errors(&self) -> Vec<SteelSearchResult> {
-        let state = self.state.lock().unwrap();
-        match &*state {
-            State::ReplacementComplete(stats) => stats.errors.clone(),
-            _ => vec![],
-        }
-    }
 }
 
 #[cfg(test)]
@@ -566,57 +594,70 @@ mod tests {
         };
 
         let expected = vec![
-            SearchResultWithReplacement {
-                search_result: SearchResult {
-                    path: temp_dir.path().to_path_buf().join("file1.txt"),
+        SearchResultWithReplacement {
+            search_result: SearchResult {
+                path: Some(temp_dir.path().join("file1.txt")),
+                content: MatchContent::Line {
                     line_number: 2,
-                    line: "It contains TEST_PATTERN that should be replaced.".to_owned(),
+                    content: "It contains TEST_PATTERN that should be replaced.".to_owned(),
                     line_ending: LineEnding::Lf,
-                    included: true,
                 },
-                replacement: "It contains REPLACEMENT that should be replaced.".to_owned(),
-                replace_result: None,
+                included: true,
             },
-            SearchResultWithReplacement {
-                search_result: SearchResult {
-                    path: temp_dir.path().to_path_buf().join("file1.txt"),
+            replacement: "It contains REPLACEMENT that should be replaced.".to_owned(),
+            replace_result: None,
+            preview_error: None,
+        },
+        SearchResultWithReplacement {
+            search_result: SearchResult {
+                path: Some(temp_dir.path().join("file1.txt")),
+                content: MatchContent::Line {
                     line_number: 3,
-                    line: "Multiple lines with TEST_PATTERN here.".to_owned(),
+                    content: "Multiple lines with TEST_PATTERN here.".to_owned(),
                     line_ending: LineEnding::Lf,
-                    included: true,
                 },
-                replacement: "Multiple lines with REPLACEMENT here.".to_owned(),
-                replace_result: None,
+                included: true,
             },
-            SearchResultWithReplacement {
-                search_result: SearchResult {
-                    path: temp_dir.path().to_path_buf().join("file2.txt"),
+            replacement: "Multiple lines with REPLACEMENT here.".to_owned(),
+            replace_result: None,
+            preview_error: None,
+        },
+        SearchResultWithReplacement {
+            search_result: SearchResult {
+                path: Some(temp_dir.path().join("file2.txt")),
+                content: MatchContent::Line {
                     line_number: 1,
-                    line: "Another file with TEST_PATTERN.".to_owned(),
+                    content: "Another file with TEST_PATTERN.".to_owned(),
                     line_ending: LineEnding::Lf,
-                    included: true,
                 },
-                replacement: "Another file with REPLACEMENT.".to_owned(),
-                replace_result: None,
+                included: true,
             },
-            SearchResultWithReplacement {
-                search_result: SearchResult {
-                    path: temp_dir
-                        .path()
-                        .to_path_buf()
-                        .join("subdir")
-                        .join("file3.txt"),
+            replacement: "Another file with REPLACEMENT.".to_owned(),
+            replace_result: None,
+            preview_error: None,
+        },
+        SearchResultWithReplacement {
+            search_result: SearchResult {
+                path: Some(temp_dir.path().join("subdir").join("file3.txt")),
+                content: MatchContent::Line {
                     line_number: 1,
-                    line: "Nested file with TEST_PATTERN.".to_owned(),
+                    content: "Nested file with TEST_PATTERN.".to_owned(),
                     line_ending: LineEnding::Lf,
-                    included: true,
                 },
-                replacement: "Nested file with REPLACEMENT.".to_owned(),
-                replace_result: None,
+                included: true,
             },
-        ];
-        search_results_clone
-            .sort_by_key(|s| (s.search_result.path.clone(), s.search_result.line_number));
+            replacement: "Nested file with REPLACEMENT.".to_owned(),
+            replace_result: None,
+            preview_error: None,
+        },
+    ];
+        search_results_clone.sort_by_key(|s| {
+            let line = match &s.search_result.content {
+                MatchContent::Line { line_number, .. } => *line_number,
+                MatchContent::ByteRange { .. } => 0,
+            };
+            (s.search_result.path.clone(), line)
+        });
         assert_eq!(search_results_clone, expected);
 
         scooter.start_replace();
