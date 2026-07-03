@@ -1,19 +1,25 @@
-use frep_core::replace::{ReplaceResult, add_replacement};
-use frep_core::search::{FileSearcher, SearchResultWithReplacement};
+use scooter_core::replace::{ReplaceResult, add_replacement};
+use scooter_core::file_content::{FileContentProvider, default_file_content_provider};
+// use scooter_core::diff::DiffColour;
+use std::string::String;
+use scooter_core::search::{FileSearcher, ParsedDirConfig, ParsedSearchConfig, SearchResultWithReplacement};
 use ignore::WalkState;
 use steel::rvals::Custom;
+// use steel::rvals::TypeKind::String;
 use steel::steel_vm::ffi::FFIValue;
 use steel_derive::Steel;
+
+use anyhow::Result;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use frep_core::validation::{self, SearchConfiguration, ValidationResult};
+use scooter_core::validation::{self, DirConfig, SearchConfig, SimpleErrorHandler, ValidationResult, parse_search_text};
 use scooter_core::{
-    diff::{Diff, line_diff},
-    utils::{read_lines_range, relative_path_from, split_indexed_lines, strip_control_chars},
+    diff::{Diff, line_diff, DiffColour},
+    utils::{read_lines_range, relative_path, split_indexed_lines, strip_control_chars},
 };
 
 use crate::logging;
@@ -141,7 +147,7 @@ impl SteelSearchResult {
             .map_err(|e| format!("file read error: {e}"))?
             .collect::<Vec<_>>();
 
-        let (before, cur, after) = split_indexed_lines(lines, line_idx, screen_height - 1)
+        let (before, cur, after) = split_indexed_lines(lines, line_idx, (screen_height - 1).try_into().unwrap())
             .map_err(|e| format!("line split error: {e}"))?;
         if cur.1 != self.line {
             return Err("File content has changed".into());
@@ -164,7 +170,7 @@ impl SteelSearchResult {
 
     fn from_search_result(search_result: &SearchResultWithReplacement, directory: &Path) -> Self {
         Self {
-            display_path: relative_path_from(directory, &search_result.search_result.path),
+            display_path: relative_path(directory, &search_result.search_result.path),
             full_path: search_result
                 .search_result
                 .path
@@ -196,11 +202,11 @@ fn diffs_to_vec(diffs: &[Diff]) -> LineWithStyle {
         .iter()
         .map(|d| {
             vec![
-                strip_control_chars(&d.text),
-                d.fg_colour.to_str().to_owned(),
+                strip_control_chars(&d.text).into_owned(),
+                d.fg_colour.to_string().into(),
                 d.bg_colour
                     .clone()
-                    .map(|c| c.to_str().to_owned())
+                    .map(|c| c.to_string().into())
                     .unwrap_or_default(),
             ]
         })
@@ -243,26 +249,36 @@ impl ScooterHx {
         match_case: bool,
         include_globs: &str,
         exclude_globs: &str,
-    ) -> FFIValue {
+    ) -> Result<FFIValue, anyhow::Error> {
         self.cancel_search();
 
         *self.state.lock().unwrap() = State::NotStarted;
 
-        let search_config = SearchConfiguration {
+        let search_config = SearchConfig {
             search_text,
             replacement_text,
             fixed_strings,
             advanced_regex: false,
-            include_globs: Some(include_globs),
-            exclude_globs: Some(exclude_globs),
             match_whole_word,
             match_case,
-            include_hidden: false,
-            directory: self.directory.clone(),
+            multiline: true,
+            interpret_escape_sequences: true,
+        };
+        let parsed_search_config = ParsedSearchConfig  {
+             search: parse_search_text(&search_config)?,
+             replace: replacement_text.to_string(),
+             multiline: true,
         };
         // TODO: handle errors in UI
-        let mut error_handler = ErrorHandler::new();
-        let result = validation::validate_search_configuration(search_config, &mut error_handler);
+        let mut error_handler = SimpleErrorHandler::new();
+        let dir_config = Some(DirConfig {
+            include_globs: Some(include_globs),
+            exclude_globs: Some(exclude_globs),
+            directory: self.directory,
+            include_hidden: false,
+            include_git_folders: false,
+        });
+        let result = validation::validate_search_configuration(search_config, dir_config, &mut error_handler);
         let file_searcher = match result {
             Err(e) => {
                 return error_response(
@@ -270,12 +286,16 @@ impl ScooterHx {
                     &format!("Failed to validate search configuration: {e}"),
                 );
             }
-            Ok(ValidationResult::Success(search_config)) => FileSearcher::new(search_config),
+            Ok(ValidationResult::Success(search_config)) => {
+                FileSearcher::new(
+                    ParsedSearchConfig,
+                    ParsedDirConfig,);
+                },
+
             Ok(ValidationResult::ValidationErrors) => {
                 return validation_error_response(&error_handler);
-            }
+            },
         };
-
         let cancellation_token = Arc::new(AtomicBool::new(false));
         let state = self.state.clone();
 
@@ -415,10 +435,10 @@ impl ScooterHx {
                     cancelled_clone,
                     num_replacements_completed_clone,
                     None,
+                    default_file_content_provider(),
                     move |result| {
-                        let _ = tx.send(result); // Ignore error if receiver is dropped
-                    },
-                )
+                    let _ = tx.send(result);
+                })
             }
             _ => return,
         };
@@ -433,7 +453,7 @@ impl ScooterHx {
                 replacement_results.push(res);
             }
 
-            let stats = frep_core::replace::calculate_statistics(replacement_results);
+            let stats = scooter_core::replace::calculate_statistics(replacement_results);
 
             let mut state = state_clone.lock().unwrap();
             if let State::PerformingReplacement { .. } =
@@ -507,7 +527,7 @@ impl ScooterHx {
 mod tests {
     use std::time::Duration;
 
-    use frep_core::{line_reader::LineEnding, search::SearchResult};
+    use scooter_core::{line_reader::LineEnding, search::SearchResult};
 
     use super::*;
     use crate::test_utils::wait_until;
