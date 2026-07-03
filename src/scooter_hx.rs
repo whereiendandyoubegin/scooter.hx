@@ -81,14 +81,13 @@ pub(crate) struct ScooterHx {
 impl Custom for ScooterHx {}
 
 #[derive(Clone, Debug, Eq, Steel, PartialEq)]
-pub(crate) struct SteelSearchResult {
-    pub(crate) display_path: String,
-    pub(crate) full_path: String,
-    pub(crate) line_num: usize,
-    pub(crate) line: String,
-    pub(crate) replacement: String,
-    pub(crate) replace_result: Option<ReplaceResult>,
-    pub(crate) included: bool,
+pub struct SteelSearchResult {
+    display_path: String,
+    full_path: String,
+    match_content: MatchContent,
+    replacement: String,
+    replace_result: Option<ReplaceResult>,
+    included: bool,
 }
 
 impl SteelSearchResult {
@@ -101,7 +100,14 @@ impl SteelSearchResult {
     }
 
     pub(crate) fn line_num(&self) -> usize {
-        self.line_num
+        match &self.match_content {
+            MatchContent::Line { line_number, .. } => *line_number,
+            MatchContent::ByteRange{
+                 lines, .. } => lines
+                .first()
+                .expect("ByteRange should contain at least one line")
+                .0,
+        }
     }
 
     pub(crate) fn build_preview(&self, screen_height: usize) -> Vec<LineWithStyle> {
@@ -137,48 +143,99 @@ impl SteelSearchResult {
     }
 
     fn try_build_preview(&self, screen_height: usize) -> Result<Vec<LineWithStyle>, String> {
-        let line_idx = self.line_num.saturating_sub(1); // Convert to 0-based index
-        let start = line_idx.saturating_sub(screen_height);
-        let end = line_idx + screen_height;
-
-        let file_path = Path::new(&self.full_path);
-        let lines = read_lines_range(file_path, start, end)
-            .map_err(|e| format!("file read error: {e}"))?
-            .collect::<Vec<_>>();
-
-        let (before, cur, after) = split_indexed_lines(lines, line_idx, (screen_height - 1).try_into().unwrap())
-            .map_err(|e| format!("line split error: {e}"))?;
-        if cur.1 != self.line {
-            return Err("File content has changed".into());
-        }
-
-        let (before_segments, after_segments) = line_diff(&self.line, &self.replacement);
-
-        let preview_lines = before
-            .iter()
-            .map(|(_, l)| str_to_vec(l))
-            .chain(vec![
-                diffs_to_vec(&before_segments),
-                diffs_to_vec(&after_segments),
-            ])
-            .chain(after.iter().map(|(_, l)| str_to_vec(l)))
-            .collect();
-
-        Ok(preview_lines)
-    }
-
-    fn from_search_result(search_result: &SearchResultWithReplacement, directory: &Path) -> Self {
-        let (line_num, line) = match &search_result.search_result.content {
+        match &self.match_content {
             MatchContent::Line {
                 line_number,
                 content,
                 ..
-            } => (*line_number, content.clone()),
-            MatchContent::ByteRange { .. } => {
-                panic!("ByteRange search results are not supported");
-            }
-        };
+            } => {
+                let line_idx = line_number.saturating_sub(1);
+                let start = line_idx.saturating_sub(screen_height);
+                let end = line_idx + screen_height;
 
+                let file_path = Path::new(&self.full_path);
+                let lines = read_lines_range(file_path, start, end)
+                    .map_err(|e| format!("file read error: {e}"))?
+                    .collect::<Vec<_>>();
+
+                let (before, cur, after) = split_indexed_lines(
+                    lines,
+                    line_idx,
+                    (screen_height - 1).try_into().unwrap(),
+                )
+                .map_err(|e| format!("line split error: {e}"))?;
+
+                if cur.1 != *content {
+                    return Err("File content has changed".into());
+                }
+
+                let (before_segments, after_segments) =
+                    line_diff(content, &self.replacement);
+
+                let preview_lines = before
+                    .iter()
+                    .map(|(_, l)| str_to_vec(l))
+                    .chain(vec![
+                        diffs_to_vec(&before_segments),
+                        diffs_to_vec(&after_segments),
+                    ])
+                    .chain(after.iter().map(|(_, l)| str_to_vec(l)))
+                    .collect();
+
+                Ok(preview_lines)
+            }
+
+            MatchContent::ByteRange {
+                lines: matched_lines,
+                ..
+            } => {
+                let (line_number, line) = matched_lines
+                    .first()
+                    .ok_or_else(|| "ByteRange contained no lines".to_string())?;
+
+                let line_idx = line_number.saturating_sub(1);
+                let start = line_idx.saturating_sub(screen_height);
+                let end = line_idx + screen_height;
+
+                let file_path = Path::new(&self.full_path);
+                let lines = read_lines_range(file_path, start, end)
+                    .map_err(|e| format!("file read error: {e}"))?
+                    .collect::<Vec<_>>();
+
+                let (before, cur, after) = split_indexed_lines(
+                    lines,
+                    line_idx,
+                    (screen_height - 1).try_into().unwrap(),
+                )
+                .map_err(|e| format!("line split error: {e}"))?;
+
+                // Adjust this field access depending on the definition of `Line`.
+                if cur.1 != line.content {
+                    return Err("File content has changed".into());
+                }
+
+                let (before_segments, after_segments) =
+                    line_diff(&line.content, &self.replacement);
+
+                let preview_lines = before
+                    .iter()
+                    .map(|(_, l)| str_to_vec(l))
+                    .chain(vec![
+                        diffs_to_vec(&before_segments),
+                        diffs_to_vec(&after_segments),
+                    ])
+                    .chain(after.iter().map(|(_, l)| str_to_vec(l)))
+                    .collect();
+
+                Ok(preview_lines)
+            }
+        }
+    }
+
+    fn from_search_result(
+        search_result: &SearchResultWithReplacement,
+        directory: &Path,
+    ) -> Self {
         Self {
             display_path: relative_path(
                 directory,
@@ -195,8 +252,7 @@ impl SteelSearchResult {
                 .expect("Search result should have a path")
                 .to_string_lossy()
                 .to_string(),
-            line_num,
-            line,
+            match_content: search_result.search_result.content.clone(),
             replacement: search_result.replacement.clone(),
             replace_result: search_result.replace_result.clone(),
             included: search_result.search_result.included,
