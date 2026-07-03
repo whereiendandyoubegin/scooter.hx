@@ -1,23 +1,21 @@
 use scooter_core::replace::{ReplaceResult, add_replacement};
-use scooter_core::file_content::{FileContentProvider, default_file_content_provider};
-use tokio::sync::broadcast::error;
-// use scooter_core::diff::DiffColour;
+use scooter_core::file_content::{default_file_content_provider};
 use std::string::String;
-use scooter_core::search::{FileSearcher, ParsedDirConfig, ParsedSearchConfig, SearchResultWithReplacement, MatchContent};
+use scooter_core::search::{FileSearcher, ParsedSearchConfig, SearchResultWithReplacement, MatchContent};
 use ignore::WalkState;
 use steel::rvals::Custom;
 // use steel::rvals::TypeKind::String;
 use steel::steel_vm::ffi::FFIValue;
 use steel_derive::Steel;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use scooter_core::validation::{self, DirConfig, SearchConfig, SimpleErrorHandler, ValidationResult, parse_search_text};
+use scooter_core::validation::{self, DirConfig, SearchConfig, ValidationResult, parse_search_text};
 use scooter_core::{
     diff::{Diff, line_diff, DiffColour},
     utils::{read_lines_range, relative_path, split_indexed_lines, strip_control_chars},
