@@ -109,8 +109,8 @@ impl SteelSearchResult {
             MatchContent::ByteRange{
                  lines, .. } => lines
                 .first()
-                .expect("ByteRange should contain at least one line")
-                .0,
+                .map(|(line_number, _)| *line_number)
+                .unwrap_or_default(),
         }
     }
 
@@ -158,6 +158,10 @@ impl SteelSearchResult {
                 let end = line_idx + screen_height;
 
                 let file_path = Path::new(&self.full_path);
+                let context_lines = screen_height
+                    .saturating_sub(1)
+                    .try_into()
+                    .map_err(|_| "Screen height is too large".to_string())?;
                 let lines = read_lines_range(file_path, start, end)
                     .map_err(|e| format!("file read error: {e}"))?
                     .collect::<Vec<_>>();
@@ -165,7 +169,7 @@ impl SteelSearchResult {
                 let (before, cur, after) = split_indexed_lines(
                     lines,
                     line_idx,
-                    (screen_height - 1).try_into().unwrap(),
+                    context_lines,
                 )
                 .map_err(|e| format!("line split error: {e}"))?;
 
@@ -191,6 +195,7 @@ impl SteelSearchResult {
 
             MatchContent::ByteRange {
                 lines: matched_lines,
+                content,
                 ..
             } => {
                 let (line_number, line) = matched_lines
@@ -202,6 +207,10 @@ impl SteelSearchResult {
                 let end = line_idx + screen_height;
 
                 let file_path = Path::new(&self.full_path);
+                let context_lines = screen_height
+                    .saturating_sub(1)
+                    .try_into()
+                    .map_err(|_| "Screen height is too large".to_string())?;
                 let lines = read_lines_range(file_path, start, end)
                     .map_err(|e| format!("file read error: {e}"))?
                     .collect::<Vec<_>>();
@@ -209,7 +218,7 @@ impl SteelSearchResult {
                 let (before, cur, after) = split_indexed_lines(
                     lines,
                     line_idx,
-                    (screen_height - 1).try_into().unwrap(),
+                    context_lines,
                 )
                 .map_err(|e| format!("line split error: {e}"))?;
 
@@ -219,7 +228,7 @@ impl SteelSearchResult {
                 }
 
                 let (before_segments, after_segments) =
-                    line_diff(&line.content, &self.replacement);
+                    line_diff(content, &self.replacement);
 
                 let preview_lines = before
                     .iter()
@@ -368,19 +377,7 @@ impl ScooterHx {
             multiline: true,
             interpret_escape_sequences: true,
         };
-        let parsed_search_config = ParsedSearchConfig {
-            search: match parse_search_text(&search_config) {
-                Ok(search) => search,
-                Err(e) => {
-                    return error_response(
-                        "validation-error",
-                        &format!("Failed to parse search text: {e}"),
-                    );
-                }
-            },
-            replace: replacement_text.to_string(),
-            multiline: true,
-        };        // TODO: handle errors in UI
+        // TODO: handle errors in UI
         let mut error_handler = ErrorHandler::new();
         let dir_config = Some(DirConfig {
             include_globs: Some(include_globs),
